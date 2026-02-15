@@ -346,6 +346,11 @@ export default {
     };
 
     const initMap = () => {
+      if (!window.AMap) {
+        console.error('AMap not loaded');
+        return;
+      }
+      
       map = new AMap.Map('map-container', {
         viewMode: '3D',
         pitch: 50,
@@ -379,24 +384,79 @@ export default {
       });
       map.add(userMarker);
 
-      if (AMap.Driving) {
-        driving = new AMap.Driving({ map });
-      }
+      // 显式加载Driving插件（用户推荐的正确做法）
+      AMap.plugin(['AMap.Driving'], function () {
+        console.log('AMap.Driving plugin loaded');
+        driving = new AMap.Driving({
+          map: map,
+          policy: AMap.DrivingPolicy.LEAST_TIME
+        });
+        console.log('Driving object created:', driving);
+      });
     };
 
     const planRoute = () => {
+      console.log('planRoute function called');
+      console.log('routeStart:', routeStart.value);
+      console.log('routeEnd:', routeEnd.value);
+      console.log('driving object:', driving);
+      console.log('AMap.DrivingPolicy:', AMap.DrivingPolicy);
+      
       if (!routeStart.value || !routeEnd.value) {
         alert('请输入起点和终点');
         return;
       }
-      if (!driving) return;
-      driving.clear();
-      driving.search(
-        [{ keyword: routeStart.value }, { keyword: routeEnd.value }],
-        (status) => {
-          if (status !== 'complete') alert('未找到相关路径，请检查输入地址');
-        }
-      );
+      if (!driving) {
+        alert('路径规划功能不可用，请检查高德地图API加载状态');
+        return;
+      }
+      
+      try {
+        console.log('Clearing previous route');
+        driving.clear();
+        
+        console.log('Starting route planning');
+        
+        // 尝试使用更简单的调用方式
+        driving.search([
+          {
+            keyword: routeStart.value,
+            city: '北京'
+          },
+          {
+            keyword: routeEnd.value,
+            city: '北京'
+          }
+        ], function(status, result) {
+            console.log('Driving search callback:', status, result);
+            if (status === 'complete') {
+              if (result.routes && result.routes.length > 0) {
+                console.log('路径规划成功:', result.routes[0]);
+                alert('路径规划成功！');
+              } else {
+                alert('未找到相关路径，请检查输入地址');
+              }
+            } else {
+              console.error('路径规划失败:', status, result);
+              let errorMessage = '路径规划失败，请检查网络连接或输入地址';
+              
+              // 处理常见错误
+              if (status === 'error') {
+                if (result && result.info) {
+                  errorMessage = `路径规划失败: ${result.info}`;
+                }
+                if (result && result.code === 'INVALID_USER_KEY') {
+                  errorMessage = '路径规划失败: API Key无效，请检查高德地图API Key配置';
+                }
+              }
+              
+              alert(errorMessage);
+            }
+          });
+      } catch (error) {
+        console.error('Error in planRoute:', error);
+        alert('路径规划过程中发生错误: ' + error.message);
+      }
     };
 
     const setMapView = (mode) => {

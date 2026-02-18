@@ -59,8 +59,8 @@
             <div id="map-container"></div>
           </div>
           
-          <div class="card panel" style="flex-direction: row; justify-content: space-between; align-items: center;">
-            <div>
+          <div class="card panel status-panel">
+            <div class="status-group">
               <div style="font-size: 14px; font-weight: bold; margin-bottom: 8px">状态快照</div>
               <div class="grid-info">
                 <div class="info-tile"><label>电量</label><span>{{ battery }}%</span></div>
@@ -69,12 +69,12 @@
                 <div class="info-tile"><label>围栏半径</label><span>{{ geofenceRadius }}m</span></div>
               </div>
             </div>
-            <div style="text-align: center">
+            <div class="status-center">
               <div style="font-size: 11px; opacity: 0.6">当前坐标</div>
               <div style="font-size: 13px; margin: 4px 0">{{ lat.toFixed(5) }}, {{ lng.toFixed(5) }}</div>
               <button class="btn-outline" style="padding: 6px 15px" @click="resetMap">定位车辆</button>
             </div>
-            <div style="text-align: right">
+            <div class="status-right">
               <div style="font-size: 11px; opacity: 0.6">实时时速</div>
               <div style="font-size: 26px; font-weight: 800; color: var(--accent)">{{ speed }} <small style="font-size: 12px">km/h</small></div>
             </div>
@@ -248,6 +248,38 @@
       <div class="fab large" @click="handleLock">{{ locked ? '🔐' : '🔓' }}</div>
       <div class="fab" title="回正视图" @click="resetMap">📍</div>
       <div class="fab" title="设置" @click="changePage('settings')">⚙️</div>
+      <div class="fab" title="AI助手" @click="toggleChat">🤖</div>
+    </div>
+    
+    <!-- AI Chat Window -->
+    <div class="chat-window" v-if="showChat">
+      <div class="chat-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">🤖</span>
+          <span style="font-weight: bold;">智能车锁AI助手</span>
+        </div>
+        <button class="close-btn" @click="toggleChat">×</button>
+      </div>
+      <div class="chat-body" ref="chatBody">
+        <div v-for="(msg, index) in chatMessages" :key="index" class="message" :class="msg.role">
+          <div class="message-content">{{ msg.content }}</div>
+        </div>
+        <div v-if="isTyping" class="message assistant">
+          <div class="message-content typing">...</div>
+        </div>
+      </div>
+      <div class="chat-footer">
+        <input 
+          v-model="userInput" 
+          @keyup.enter="sendMessage" 
+          placeholder="输入问题，例如：如何远程解锁？" 
+          type="text"
+        >
+        <button class="voice-btn" @click="startVoiceInput" :class="{ 'recording': isRecording }" title="按住说话">
+          {{ isRecording ? '🎙️...' : '🎙️' }}
+        </button>
+        <button @click="sendMessage" :disabled="isTyping || !userInput.trim()">发送</button>
+      </div>
     </div>
   </div>
 </template>
@@ -323,6 +355,148 @@ export default {
     const showWarning = ref(false);
     const geofenceEnabled = ref(true);
 
+    const showChat = ref(false);
+    const userInput = ref('');
+    const chatMessages = ref([
+      { role: 'assistant', content: '你好！我是你的智能车锁AI助手，有什么可以帮你的吗？' }
+    ]);
+    const isTyping = ref(false);
+    const chatBody = ref(null);
+
+    const toggleChat = () => {
+      showChat.value = !showChat.value;
+      if (showChat.value) {
+        setTimeout(scrollToBottom, 100);
+      }
+    };
+
+    const scrollToBottom = () => {
+      if (chatBody.value) {
+        chatBody.value.scrollTop = chatBody.value.scrollHeight;
+      }
+    };
+
+    const isRecording = ref(false);
+
+    // 语音识别
+    const startVoiceInput = () => {
+      if (!('webkitSpeechRecognition' in window)) {
+        alert('您的浏览器不支持语音识别，请使用 Chrome 或 Edge。');
+        return;
+      }
+      
+      const recognition = new window.webkitSpeechRecognition();
+      recognition.lang = 'zh-CN';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      
+      recognition.onstart = () => {
+        isRecording.value = true;
+      };
+      
+      recognition.onend = () => {
+        isRecording.value = false;
+      };
+      
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        userInput.value = transcript;
+        // 可选：识别完成后自动发送
+        // sendMessage(); 
+      };
+      
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error', event.error);
+        isRecording.value = false;
+      };
+      
+      recognition.start();
+    };
+
+    // 打字机效果函数
+    const typeWriterEffect = (text, targetMessage) => {
+      let i = 0;
+      isTyping.value = true;
+      targetMessage.content = ''; // 清空初始内容
+      
+      const timer = setInterval(() => {
+        if (i < text.length) {
+          targetMessage.content += text.charAt(i);
+          i++;
+          scrollToBottom();
+        } else {
+          clearInterval(timer);
+          isTyping.value = false;
+        }
+      }, 30); // 每个字符间隔30ms
+    };
+
+    const sendMessage = async () => {
+      const message = userInput.value.trim();
+      if (!message) return;
+
+      chatMessages.value.push({ role: 'user', content: message });
+      userInput.value = "";
+      isTyping.value = true;
+      scrollToBottom();
+
+      try {
+        // 准备发送给后端的历史记录
+        const historyToSend = chatMessages.value.map(msg => ({
+          role: msg.role,
+          content: msg.content
+        }));
+
+        const res = await api.post('/api/chat', { 
+          message,
+          history: historyToSend 
+        });
+        
+        let reply = res.data.reply;
+
+        // 处理导航指令 [CMD:NAV:目的地]
+        const navMatch = reply.match(/\[CMD:NAV:(.*?)\]/);
+        if (navMatch) {
+          const destination = navMatch[1];
+          reply = reply.replace(navMatch[0], ''); // 移除指令文本
+          
+          // 创建一个新的助手消息用于显示回复文本
+          const aiMsg = { role: 'assistant', content: '' };
+          chatMessages.value.push(aiMsg);
+          // 获取数组中的响应式对象，确保修改能触发视图更新
+          const targetMsg = chatMessages.value[chatMessages.value.length - 1];
+          
+          // 如果有文本回复，先打字机显示，然后触发导航
+          if (reply.trim()) {
+            typeWriterEffect(reply, targetMsg);
+            // 等待打字机差不多打完再开始导航（简单估算时间）
+            setTimeout(() => {
+              startAiNavigation(destination);
+            }, reply.length * 30 + 500);
+          } else {
+            // 如果只有指令没有文本，直接移除空消息并导航
+            chatMessages.value.pop();
+            isTyping.value = false;
+            startAiNavigation(destination);
+          }
+        } else {
+          // 普通回复，使用打字机效果
+          const aiMsg = { role: 'assistant', content: '...' }; // 占位符
+          chatMessages.value.push(aiMsg);
+          // 获取数组中的响应式对象
+          const targetMsg = chatMessages.value[chatMessages.value.length - 1];
+          typeWriterEffect(reply, targetMsg);
+        }
+        
+        // AI可能更改了设备状态，刷新数据
+        await fetchData();
+      } catch (e) {
+        chatMessages.value.push({ role: 'assistant', content: '抱歉，网络连接异常，请稍后再试。' });
+        isTyping.value = false;
+        scrollToBottom();
+      }
+    };
+
     const fetchData = async () => {
       try {
         const res = await api.get('/api/device');
@@ -384,14 +558,64 @@ export default {
       });
       map.add(userMarker);
 
-      // 显式加载Driving插件（用户推荐的正确做法）
-      AMap.plugin(['AMap.Driving'], function () {
-        console.log('AMap.Driving plugin loaded');
+      // 显式加载Driving和PlaceSearch插件
+      AMap.plugin(['AMap.Driving', 'AMap.PlaceSearch'], function () {
+        console.log('AMap plugins loaded');
         driving = new AMap.Driving({
           map: map,
           policy: AMap.DrivingPolicy.LEAST_TIME
         });
         console.log('Driving object created:', driving);
+      });
+    };
+
+    const startAiNavigation = (destination) => {
+      routeStart.value = "当前位置";
+      routeEnd.value = destination;
+      
+      chatMessages.value.push({ role: 'assistant', content: `正在为您规划前往 ${destination} 的路线...` });
+      
+      if (!driving) {
+        chatMessages.value.push({ role: 'assistant', content: '导航组件尚未初始化，请稍后再试。' });
+        return;
+      }
+
+      // 使用PlaceSearch先获取目的地坐标，再规划路线
+      const placeSearch = new AMap.PlaceSearch({
+        city: '北京' // 默认限制在北京，可按需修改
+      });
+
+      placeSearch.search(destination, function(status, result) {
+        if (status === 'complete' && result.info === 'OK') {
+          const poi = result.poiList.pois[0];
+          const endLngLat = poi.location;
+          
+          console.log(`Found destination: ${poi.name} at ${endLngLat}`);
+
+          driving.clear();
+          driving.search(
+            new AMap.LngLat(lng.value, lat.value),
+            endLngLat,
+            function(status, result) {
+              if (status === 'complete') {
+                const distance = (result.routes[0].distance / 1000).toFixed(1);
+                const time = (result.routes[0].time / 60).toFixed(0);
+                chatMessages.value.push({ 
+                  role: 'assistant', 
+                  content: `路径规划成功！\n目的地：${poi.name}\n全程：${distance}公里\n预计耗时：${time}分钟` 
+                });
+              } else {
+                console.error('Driving search failed:', status, result);
+                chatMessages.value.push({ role: 'assistant', content: `抱歉，无法规划到 ${destination} 的驾车路线。` });
+              }
+              scrollToBottom();
+            }
+          );
+        } else {
+          console.error('Place search failed:', status, result);
+          chatMessages.value.push({ role: 'assistant', content: `抱歉，找不到地点 "${destination}"，请尝试更详细的地址。` });
+          scrollToBottom();
+        }
       });
     };
 
@@ -568,6 +792,12 @@ export default {
       const ctx = canvas.getContext('2d');
       let w = (canvas.width = window.innerWidth);
       let h = (canvas.height = window.innerHeight);
+      
+      window.addEventListener('resize', () => {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
+      });
+
       let pts = [];
       for (let i = 0; i < 40; i++)
         pts.push({ x: Math.random() * w, y: Math.random() * h, vx: Math.random() - 0.5, vy: Math.random() - 0.5 });
@@ -632,13 +862,185 @@ export default {
       showWarning,
       geofenceEnabled,
       dismissWarning,
-      updateGeofenceRadius
+      updateGeofenceRadius,
+      showChat,
+      toggleChat,
+      userInput,
+      chatMessages,
+      sendMessage,
+      isTyping,
+      isRecording,
+      startVoiceInput,
+      chatBody,
+      startAiNavigation
     };
   }
 };
 </script>
 
 <style>
+/* AI Chat Styles */
+.chat-window {
+  position: fixed;
+  bottom: 100px;
+  right: 30px;
+  width: 350px;
+  height: 500px;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  box-shadow: 0 0 30px rgba(0, 234, 255, 0.2);
+  backdrop-filter: blur(15px);
+  overflow: hidden;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-header {
+  padding: 15px;
+  background: rgba(0, 234, 255, 0.1);
+  border-bottom: 1px solid rgba(0, 234, 255, 0.2);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--accent);
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.chat-body {
+  flex: 1;
+  padding: 15px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message {
+  display: flex;
+  max-width: 85%;
+}
+
+.message.user {
+  align-self: flex-end;
+}
+
+.message.assistant {
+  align-self: flex-start;
+}
+
+.message-content {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.message.user .message-content {
+  background: var(--accent);
+  color: #000;
+  border-top-right-radius: 2px;
+}
+
+.message.assistant .message-content {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  border-top-left-radius: 2px;
+}
+
+.chat-footer {
+  padding: 15px;
+  border-top: 1px solid rgba(0, 234, 255, 0.2);
+  display: flex;
+  gap: 10px;
+}
+
+.chat-footer input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 234, 255, 0.3);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.chat-footer input:focus {
+  border-color: var(--accent);
+}
+
+.chat-footer button {
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 0 15px;
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chat-footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 录音按钮样式 */
+.voice-btn {
+  background: transparent !important;
+  border: 1px solid var(--accent) !important;
+  color: var(--accent) !important;
+  font-size: 16px !important;
+  padding: 0 10px !important;
+  transition: all 0.3s ease;
+  min-width: 40px;
+}
+
+.voice-btn.recording {
+  background: rgba(255, 0, 0, 0.2) !important;
+  border-color: #ff2a2a !important;
+  color: #ff2a2a !important;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
+/* 移动端适配 Chat */
+@media (max-width: 767px) {
+  .chat-window {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    z-index: 1000;
+  }
+}
+
 :root {
   --bg-dark: #05121a;
   --bg-panel: rgba(7, 35, 50, 0.85);
@@ -654,7 +1056,408 @@ export default {
 body, html { margin: 0; padding: 0; height: 100%; background: var(--bg-dark); color: var(--text-main); font-family: "Inter", "Segoe UI", sans-serif; }
 
 #particle-canvas { position: fixed; inset: 0; z-index: 0; opacity: 0.25; pointer-events: none; }
-#app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; padding: 12px 18px; overflow: hidden; }
+#app { position: relative; z-index: 1; display: flex; flex-direction: column; min-height: 100vh; height: 100%; padding: 12px 18px; overflow: hidden; }
+
+/* 响应式设计 */
+/* 大屏幕桌面 */
+@media (min-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr 420px;
+  }
+}
+
+/* 中等屏幕桌面 */
+@media (max-width: 1199px) and (min-width: 992px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr 380px;
+  }
+}
+
+/* 小屏幕桌面/平板 */
+@media (max-width: 991px) and (min-width: 768px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr 320px;
+  }
+  
+  .left-side {
+    grid-template-rows: 400px auto;
+  }
+  
+  .route-planner {
+    width: 220px;
+  }
+}
+
+/* 平板设备 */
+@media (max-width: 767px) and (min-width: 640px) {
+  #app {
+    padding: 10px 14px;
+    height: 100%;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  
+  .left-side {
+    grid-template-rows: 380px auto;
+  }
+  
+  .right-side {
+    max-height: 450px;
+  }
+  
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .style-switcher {
+    margin-top: 8px;
+  }
+  
+  .title-group h1 {
+    font-size: 17px;
+  }
+  
+  .route-planner {
+    width: 200px;
+  }
+  
+  .grid-info {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+}
+
+/* 大屏手机 */
+@media (max-width: 639px) and (min-width: 480px) {
+  #app {
+    padding: 8px 12px;
+    height: 100%;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  
+  .left-side {
+    grid-template-rows: 350px auto;
+  }
+  
+  .right-side {
+    max-height: 400px;
+  }
+  
+  .title-group h1 {
+    font-size: 16px;
+  }
+  
+  .route-planner {
+    width: 180px;
+    padding: 9px;
+  }
+  
+  .route-input {
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+  
+  .btn-go {
+    font-size: 11px;
+    padding: 6px 12px;
+  }
+  
+  .grid-info {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  
+  .info-tile {
+    font-size: 13px;
+  }
+}
+
+/* 小屏手机 */
+@media (max-width: 479px) {
+  #app {
+    padding: 6px 10px;
+    height: 100%;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  
+  .left-side {
+    grid-template-rows: 300px auto;
+  }
+  
+  .right-side {
+    max-height: 350px;
+  }
+  
+  .title-group h1 {
+    font-size: 14px;
+  }
+  
+  .title-group p {
+    font-size: 10px;
+  }
+  
+  .route-planner {
+    width: 150px;
+    padding: 8px;
+  }
+  
+  .route-input {
+    font-size: 10px;
+    padding: 4px 6px;
+    margin-bottom: 4px;
+  }
+  
+  .btn-go {
+    font-size: 10px;
+    padding: 5px 10px;
+  }
+  
+  .grid-info {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  
+  .info-tile {
+    font-size: 12px;
+    padding: 8px;
+  }
+  
+  .info-tile label {
+    font-size: 9px;
+  }
+  
+  .info-tile span {
+    font-size: 13px;
+  }
+  
+  .warning-content {
+    padding: 20px;
+    max-width: 90%;
+  }
+  
+  .warning-text h3 {
+    font-size: 20px;
+  }
+}
+
+/* 移动端横屏适配 */
+@media (orientation: landscape) and (max-width: 1024px) {
+  #app {
+    padding: 8px 16px;
+    height: 100%;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr 280px;
+    grid-template-rows: 1fr;
+    gap: 10px;
+  }
+  
+  .left-side {
+    grid-template-rows: 1fr 100px;
+    gap: 10px;
+  }
+  
+  .right-side {
+    max-height: none;
+    height: 100%;
+    gap: 8px;
+  }
+  
+  .title-group h1 {
+    font-size: 16px;
+  }
+  
+  .title-group p {
+    font-size: 11px;
+  }
+  
+  .route-planner {
+    width: 160px;
+    padding: 8px;
+  }
+  
+  .route-input {
+    font-size: 11px;
+    padding: 5px 8px;
+    margin-bottom: 4px;
+  }
+  
+  .btn-go {
+    font-size: 11px;
+    padding: 6px 12px;
+  }
+  
+  .grid-info {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  
+  .info-tile {
+    font-size: 11px;
+    padding: 6px;
+  }
+  
+  .info-tile label {
+    font-size: 9px;
+  }
+  
+  .info-tile span {
+    font-size: 12px;
+  }
+  
+  .card {
+    padding: 10px;
+  }
+  
+  .lock-button-container {
+    min-height: 40px;
+  }
+  
+  .btn-action {
+    padding: 8px;
+    font-size: 13px;
+  }
+  
+  .nav-item {
+    padding: 6px 16px;
+    font-size: 12px;
+  }
+}
+
+/* 极小尺寸横屏设备适配 */
+@media (orientation: landscape) and (max-width: 600px) {
+  #app {
+    padding: 6px 10px;
+    height: 100%;
+  }
+  
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 8px;
+  }
+  
+  .left-side {
+    grid-template-rows: 200px 100px;
+    gap: 8px;
+  }
+  
+  .right-side {
+    max-height: 250px;
+    height: 100%;
+    gap: 6px;
+  }
+  
+  .title-group h1 {
+    font-size: 14px;
+  }
+  
+  .title-group p {
+    font-size: 10px;
+  }
+  
+  .route-planner {
+    width: 140px;
+    padding: 6px;
+  }
+  
+  .route-input {
+    font-size: 10px;
+    padding: 4px 6px;
+    margin-bottom: 3px;
+  }
+  
+  .btn-go {
+    font-size: 10px;
+    padding: 5px 10px;
+  }
+  
+  .grid-info {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+  }
+  
+  .info-tile {
+    font-size: 10px;
+    padding: 4px;
+  }
+  
+  .info-tile label {
+    font-size: 8px;
+  }
+  
+  .info-tile span {
+    font-size: 11px;
+  }
+  
+  .card {
+    padding: 8px;
+  }
+  
+  .lock-button-container {
+    min-height: 35px;
+  }
+  
+  .btn-action {
+    padding: 6px;
+    font-size: 12px;
+  }
+  
+  .nav-item {
+    padding: 4px 12px;
+    font-size: 11px;
+  }
+}
+
+/* 小高度设备 */
+@media (max-height: 600px) {
+  .left-side {
+    grid-template-rows: 280px auto;
+  }
+  
+  .right-side {
+    max-height: 300px;
+  }
+}
+
+/* 极小高度设备 */
+@media (max-height: 500px) {
+  .left-side {
+    grid-template-rows: 240px auto;
+  }
+  
+  .right-side {
+    max-height: 250px;
+  }
+  
+  .route-planner {
+    padding: 6px;
+  }
+  
+  .route-input {
+    font-size: 10px;
+    padding: 3px 5px;
+  }
+  
+  .btn-go {
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+}
 
 .geofence-warning {
   position: fixed;
@@ -751,6 +1554,56 @@ body, html { margin: 0; padding: 0; height: 100%; background: var(--bg-dark); co
 .left-side { display: grid; grid-template-rows: 1fr 140px; gap: 14px; min-height: 0; }
 .right-side { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 4px; height: 100%; }
 .right-side::-webkit-scrollbar { width: 6px; }
+
+/* 状态面板响应式样式 */
+.status-panel {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.status-center {
+  text-align: center;
+}
+
+.status-right {
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .status-panel {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 15px !important;
+  }
+  
+  .status-center {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .status-center .btn-outline {
+    align-self: center;
+    width: auto;
+    min-width: 100px;
+  }
+
+  .status-right {
+    text-align: left;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.05);
+  }
+}
+
+::-webkit-scrollbar { width: 6px; }
 .right-side::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.1); border-radius: 3px; }
 .right-side::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
 .right-side::-webkit-scrollbar-thumb:hover { background: var(--accent-glow); }
@@ -863,6 +1716,123 @@ input[type="range"]::-moz-range-thumb:hover {
 .fab { width: 48px; height: 48px; border-radius: 50%; background: var(--bg-panel); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; color: var(--accent); cursor: pointer; box-shadow: 0 0 15px var(--accent-glow); transition: 0.3s; backdrop-filter: blur(5px); }
 .fab:hover { background: var(--accent); color: #000; transform: scale(1.05); }
 .fab.large { width: 58px; height: 58px; font-size: 24px; }
+
+/* 移动端适配fab-group */
+@media (max-width: 767px) {
+  .fab-group {
+    position: fixed;
+    bottom: 20px;
+    right: 50%;
+    transform: translateX(50%);
+    flex-direction: row;
+    gap: 20px;
+    background: rgba(7, 35, 50, 0.9);
+    padding: 10px 20px;
+    border-radius: 40px;
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    width: auto;
+  }
+  
+  .fab {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+    box-shadow: none;
+    background: transparent;
+    border: 1px solid rgba(0, 234, 255, 0.3);
+  }
+  
+  .fab:hover {
+    transform: scale(1.1);
+  }
+  
+  .fab.large {
+    width: 54px;
+    height: 54px;
+    font-size: 24px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    margin-top: -20px;
+    box-shadow: 0 0 15px var(--accent-glow);
+  }
+}
+
+@media (max-width: 479px) {
+  .fab-group {
+    bottom: 15px;
+    gap: 15px;
+    padding: 8px 16px;
+  }
+  
+  .fab {
+    width: 38px;
+    height: 38px;
+    font-size: 16px;
+  }
+  
+  .fab.large {
+    width: 48px;
+    height: 48px;
+    font-size: 20px;
+    margin-top: -15px;
+  }
+}
+
+/* 针对横屏模式的特殊处理 */
+@media (orientation: landscape) and (max-height: 500px) {
+  .fab-group {
+    right: 20px;
+    bottom: 50%;
+    transform: translateY(50%);
+    flex-direction: column;
+    background: rgba(7, 35, 50, 0.8);
+    padding: 10px;
+    border-radius: 30px;
+    width: auto;
+    gap: 10px;
+  }
+
+  .fab.large {
+    margin-top: 0;
+  }
+}
+
+/* 竖屏模式强制滚动支持 */
+@media (max-width: 767px) {
+  body, html {
+    overflow-y: auto !important;
+    height: auto !important;
+  }
+  
+  #app {
+    height: auto !important;
+    min-height: 100vh;
+    overflow: visible !important;
+    padding-bottom: 80px; /* 为底部FAB留出空间 */
+  }
+  
+  .page-container {
+    height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  
+  .dashboard-grid {
+    display: flex !important;
+    flex-direction: column;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  
+  .left-side, .right-side {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+}
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -413,25 +413,56 @@ export default {
       recognition.start();
     };
 
+    let typeWriterTimer = null;
+    let currentTypingMessage = null;
+    let currentFullText = '';
+    let latestNavigationTimestamp = 0;
+
     // 打字机效果函数
     const typeWriterEffect = (text, targetMessage) => {
+      // 如果有正在进行的打字任务，先立即完成它
+      if (typeWriterTimer) {
+        clearInterval(typeWriterTimer);
+        if (currentTypingMessage) {
+          currentTypingMessage.content = currentFullText;
+        }
+      }
+
       let i = 0;
       isTyping.value = true;
       targetMessage.content = ''; // 清空初始内容
       
-      const timer = setInterval(() => {
+      currentTypingMessage = targetMessage;
+      currentFullText = text;
+      
+      typeWriterTimer = setInterval(() => {
         if (i < text.length) {
           targetMessage.content += text.charAt(i);
           i++;
           scrollToBottom();
         } else {
-          clearInterval(timer);
+          clearInterval(typeWriterTimer);
+          typeWriterTimer = null;
+          currentTypingMessage = null;
           isTyping.value = false;
         }
       }, 30); // 每个字符间隔30ms
     };
 
     const sendMessage = async () => {
+      // 如果正在打字，立即中断并显示完整内容
+      if (isTyping.value) {
+        if (typeWriterTimer) {
+          clearInterval(typeWriterTimer);
+          typeWriterTimer = null;
+        }
+        if (currentTypingMessage) {
+          currentTypingMessage.content = currentFullText;
+          currentTypingMessage = null;
+        }
+        isTyping.value = false;
+      }
+
       const message = userInput.value.trim();
       if (!message) return;
 
@@ -460,24 +491,20 @@ export default {
           const destination = navMatch[1];
           reply = reply.replace(navMatch[0], ''); // 移除指令文本
           
+          // 立即触发导航，不等待打字机
+          startAiNavigation(destination);
+          
           // 创建一个新的助手消息用于显示回复文本
           const aiMsg = { role: 'assistant', content: '' };
           chatMessages.value.push(aiMsg);
-          // 获取数组中的响应式对象，确保修改能触发视图更新
           const targetMsg = chatMessages.value[chatMessages.value.length - 1];
           
-          // 如果有文本回复，先打字机显示，然后触发导航
           if (reply.trim()) {
             typeWriterEffect(reply, targetMsg);
-            // 等待打字机差不多打完再开始导航（简单估算时间）
-            setTimeout(() => {
-              startAiNavigation(destination);
-            }, reply.length * 30 + 500);
           } else {
-            // 如果只有指令没有文本，直接移除空消息并导航
+            // 如果只有指令没有文本，移除空消息
             chatMessages.value.pop();
             isTyping.value = false;
-            startAiNavigation(destination);
           }
         } else {
           // 普通回复，使用打字机效果
@@ -570,29 +597,56 @@ export default {
     };
 
     const startAiNavigation = (destination) => {
-      routeStart.value = "当前位置";
+      const thisNavigationTimestamp = Date.now();
+      latestNavigationTimestamp = thisNavigationTimestamp;
+
+      console.log('Starting navigation to:', destination);
+      
+      // 更新UI绑定的输入框
       routeEnd.value = destination;
+      routeStart.value = "当前位置";
       
       chatMessages.value.push({ role: 'assistant', content: `正在为您规划前往 ${destination} 的路线...` });
-      
+      scrollToBottom();
+
+      // 1. 确保 Driving 实例存在且唯一
       if (!driving) {
-        chatMessages.value.push({ role: 'assistant', content: '导航组件尚未初始化，请稍后再试。' });
-        return;
+        if (window.AMap && map) {
+          driving = new AMap.Driving({
+            map: map,
+            policy: AMap.DrivingPolicy.LEAST_TIME,
+            hideMarkers: false, // 显示起终点标记
+            showTraffic: false  // 不显示路况
+          });
+        } else {
+          chatMessages.value.push({ role: 'assistant', content: '地图组件尚未就绪，请稍后重试。' });
+          return;
+        }
       }
 
-      // 使用PlaceSearch先获取目的地坐标，再规划路线
+      // 2. 无论是否是新实例，都先清除地图上的旧路线
+      driving.clear();
+
+      // 3. 使用 PlaceSearch 获取目的地坐标
       const placeSearch = new AMap.PlaceSearch({
-        city: '北京' // 默认限制在北京，可按需修改
+        pageSize: 1,
+        extensions: 'base'
       });
 
       placeSearch.search(destination, function(status, result) {
-        if (status === 'complete' && result.info === 'OK') {
+        // 检查是否是最新的请求
+        if (latestNavigationTimestamp !== thisNavigationTimestamp) {
+          console.log('Navigation request cancelled (superseded by new request).');
+          return;
+        }
+
+        if (status === 'complete' && result.info === 'OK' && result.poiList && result.poiList.pois && result.poiList.pois.length > 0) {
           const poi = result.poiList.pois[0];
           const endLngLat = poi.location;
           
           console.log(`Found destination: ${poi.name} at ${endLngLat}`);
-
-          driving.clear();
+          
+          // 4. 执行路径规划
           driving.search(
             new AMap.LngLat(lng.value, lat.value),
             endLngLat,
@@ -606,14 +660,14 @@ export default {
                 });
               } else {
                 console.error('Driving search failed:', status, result);
-                chatMessages.value.push({ role: 'assistant', content: `抱歉，无法规划到 ${destination} 的驾车路线。` });
+                chatMessages.value.push({ role: 'assistant', content: `抱歉，无法规划到 ${destination} 的驾车路线（错误代码：${status}）。` });
               }
               scrollToBottom();
             }
           );
         } else {
           console.error('Place search failed:', status, result);
-          chatMessages.value.push({ role: 'assistant', content: `抱歉，找不到地点 "${destination}"，请尝试更详细的地址。` });
+          chatMessages.value.push({ role: 'assistant', content: `抱歉，找不到地点 "${destination}"。` });
           scrollToBottom();
         }
       });

@@ -290,7 +290,9 @@ import { ref, computed, onMounted } from 'vue';
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: 'http://localhost:5000',
+  // 生产环境使用 Nginx 转发，这里留空即可，因为请求本身就包含了 /api 前缀
+  // 比如请求 '/api/chat'，浏览器会自动补全为 'https://zixianggao.icu/api/chat'
+  baseURL: process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5000',
   timeout: 5000
 });
 
@@ -878,8 +880,15 @@ export default {
       initMap();
       initParticles();
       simulateUserMovement();
+      
+      // 模拟速度变化
       setInterval(() => {
         speed.value = locked.value ? 0 : (Math.random() * 6).toFixed(1);
+      }, 3000);
+
+      // 定时轮询后端数据 (每3秒一次)
+      setInterval(() => {
+        fetchData();
       }, 3000);
     });
 

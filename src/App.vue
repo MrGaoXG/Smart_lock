@@ -1,4 +1,5 @@
 /* global AMap */
+//
 
 <template>
   <canvas id="particle-canvas"></canvas>
